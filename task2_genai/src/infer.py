@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .config import Config, load_config
 from .json_utils import extract_first_json
 from .schemas import Verdict, strict_violations, validate_answer
-from .utils import chat_text, dtype_kwarg, read_jsonl, setup_tokenizer, write_json, write_jsonl
+from .utils import cast_float_params, chat_text, dtype_kwarg, read_jsonl, setup_tokenizer, write_json, write_jsonl
 
 SYSTEMS = ("base_zeroshot", "base_fewshot", "ft")
 FEWSHOT_ORDER = (Verdict.NON_COMPLIANT.value, Verdict.COMPLIANT.value, Verdict.NEEDS_MORE_INFO.value)
@@ -54,6 +54,8 @@ def load_model_fp16(model_id: str, cfg: Config, tokenizer: Any):
         attn_implementation=cfg.student.attn_implementation,
         **dtype_kwarg(torch.float16 if on_gpu else torch.float32),
     )
+    if on_gpu:   # some transformers versions keep the checkpoint's bf16; the T4 needs fp16
+        cast_float_params(model, torch.bfloat16, torch.float16)
     model.eval()
     model.config.use_cache = True
     model.config.pad_token_id = tokenizer.pad_token_id

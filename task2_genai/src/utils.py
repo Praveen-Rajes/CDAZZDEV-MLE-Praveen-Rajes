@@ -169,6 +169,22 @@ def dtype_kwarg(dtype: Any) -> Dict[str, Any]:
     return {"torch_dtype": dtype}
 
 
+def cast_float_params(model: Any, from_dtype: Any, to_dtype: Any, trainable_only: bool = False) -> int:
+    """Cast parameters of `from_dtype` (None = any non-fp32 float) to `to_dtype`. 4-bit weights (uint8) are untouched."""
+    import torch
+
+    n = 0
+    for p in model.parameters():
+        if trainable_only and not p.requires_grad:
+            continue
+        if not torch.is_floating_point(p):
+            continue
+        if (from_dtype is None and p.dtype != to_dtype) or p.dtype == from_dtype:
+            p.data = p.data.to(to_dtype)
+            n += 1
+    return n
+
+
 def supported_kwargs(fn: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Keep only kwargs that `fn` accepts by name. Prints anything dropped (no silent defaults)."""
     params = inspect.signature(fn).parameters

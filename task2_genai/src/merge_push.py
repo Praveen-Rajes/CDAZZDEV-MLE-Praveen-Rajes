@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .config import Config, load_config, load_text
-from .utils import (chat_ids, dtype_kwarg, free_memory, read_json, read_jsonl, setup_tokenizer, supported_kwargs,
+from .utils import (cast_float_params, chat_ids, dtype_kwarg, free_memory, read_json, read_jsonl, setup_tokenizer, supported_kwargs,
                     write_json)
 
 
@@ -132,6 +132,7 @@ def merge_adapter(cfg: Config, adapter_dir: Path, out_dir: Path) -> Path:
     base = AutoModelForCausalLM.from_pretrained(cfg.student.model_id, device_map={"": 0},
                                                 attn_implementation=cfg.student.attn_implementation,
                                                 **dtype_kwarg(torch.float16))
+    cast_float_params(base, torch.bfloat16, torch.float16)   # merge into fp16 weights, as documented
     model = PeftModel.from_pretrained(base, str(adapter_dir))
     merged = model.merge_and_unload()
     merged.config.use_cache = True

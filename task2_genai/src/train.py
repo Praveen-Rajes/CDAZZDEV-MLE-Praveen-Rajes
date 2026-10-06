@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .config import Config, load_config
 from .json_utils import extract_first_json
 from .schemas import validate_answer
-from .utils import (chat_ids, dtype_kwarg, free_memory, read_json, read_jsonl, set_seed, setup_tokenizer,
+from .utils import (cast_float_params, chat_ids, dtype_kwarg, free_memory, read_json, read_jsonl, set_seed, setup_tokenizer,
                     write_json)
 
 
@@ -92,6 +92,11 @@ def load_base_4bit(cfg: Config, tokenizer: Any, model_id: Optional[str] = None):
     )
     model.config.use_cache = False               # incompatible with gradient checkpointing during training
     model.config.pad_token_id = tokenizer.pad_token_id
+    # Newer transformers can keep the checkpoint's bf16 dtype for the non-quantised modules even when fp16 is
+    # requested. The T4 has no native bf16 and the fp16 GradScaler cannot handle bf16, so convert them to fp16.
+    n = cast_float_params(model, torch.bfloat16, torch.float16)
+    if n:
+        print(f"[train] converted {n} bf16 tensors to fp16 (T4 has no native bf16)")
     return model
 
 
@@ -119,6 +124,12 @@ def build_peft_model(model: Any, lcfg: Any, quantized: bool = True, gradient_che
             gradient_checkpointing_kwargs={"use_reentrant": False},
         )
     model = get_peft_model(model, lcfg)
+    # Trainable LoRA weights in fp32: the fp16 GradScaler (fp16=True) refuses to unscale fp16/bf16 gradients.
+    import torch
+
+    n = cast_float_params(model, None, torch.float32, trainable_only=True)
+    if n:
+        print(f"[train] cast {n} trainable tensors to fp32 for mixed-precision training")
     return model
 
 
