@@ -1,0 +1,23 @@
+# AI-ASSISTED: Claude Code (Claude Opus 5.5), Prompt: 'Repo skeleton per plan Section 4', Date: 2026-10-06
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Model artefacts (live on Google Drive / Hugging Face Hub, never in git)
+checkpoints/
+outputs/
+*.safetensors
+*.bin
+*.pt
+wandb/
+chroma_db/
+task2_genai/hf_cache/

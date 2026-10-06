@@ -1,0 +1,264 @@
+# AI-ASSISTED: Claude Code (Claude Opus 5.5), Prompt: 'config.yaml with every path, model id and hyperparameter per plan Section 7', Date: 2026-10-06
+# Single source of every path, model id and hyperparameter for Task 2.
+# Each value carries a one-line reason. Relative paths are relative to task2_genai/.
+# Floats are written as 1.0e-4 (not 1e-4) because PyYAML reads 1e-4 as a string.
+
+project:
+  seed: 42                                  # one seed for python, numpy, torch and every sampler (reproducibility)
+
+paths:
+  seeds: data/seeds.jsonl                   # stratified seed specs (Phase 2)
+  generations: data/raw/generations.jsonl   # every accepted teacher item, with seed and teacher id
+  rejected: data/raw/rejected.jsonl         # every rejected teacher item, with reason
+  call_log: data/logs/generation_calls.jsonl  # one line per API call: tokens, cached tokens, latency, status
+  clean: data/clean/all.jsonl               # items that passed every filter (Phase 3)
+  splits_dir: data/splits                   # train/val/test chat JSONL
+  audit_log: data/audit_log.md              # 30 cards for JP's manual audit (gate G3)
+  reports_dir: reports                      # every number in any README is rendered from JSON here
+  figures_dir: reports/figures              # png charts
+  prompts_dir: prompts                      # prompts are loaded from files, never inlined in code
+  rulebook: knowledge/pdpa_policy_rulebook.md  # Appendix A, also the RAG knowledge base
+  chroma_dir: chroma_db                     # gitignored, rebuilt in the notebook
+  # Checkpoints, adapters and merged weights. In Colab this is on Google Drive so a disconnect can resume.
+  # Env var CDAZZ_WORK_DIR overrides it; if the folder's parent does not exist (not in Colab) it falls back to task2_genai/outputs.
+  work_dir: /content/drive/MyDrive/cdazz_task2
+
+provider:
+  base_url: https://api.groq.com/openai/v1  # OpenAI-compatible endpoint; any compatible provider works
+  api_key_env: GROQ_API_KEY                 # name of the env var that holds the key (never the key itself)
+  timeout_s: 180                            # a 4-example strict-JSON batch can take a minute
+
+teacher:
+  model: openai/gpt-oss-120b                # strongest free Groq model; strict JSON schema and prompt caching
+  temperature: 1.0                          # diversity from sampling plus seeds; quality enforced by validators
+  top_p: 1.0                                # no nucleus truncation; temperature alone controls spread
+  max_tokens: 6000                          # 4 items (~1.7K tokens) + reasoning, with generous margin
+  strict_schema: true                       # constrained decoding against TeacherBatch
+  extra_body:                               # provider-specific parameters, sent as-is
+    reasoning_effort: low                   # low reasoning saves daily tokens
+    include_reasoning: false                # do not return reasoning text (gpt-oss on Groq)
+  rate_limits:
+    rpm: 30                                 # Groq free plan, checked 2026-10-06
+    tpm: 8000                               # Groq free plan tokens/minute (cached tokens do not count)
+    daily_token_budget: 190000              # stop cleanly below the 200K tokens/day limit
+
+teacher_fallback:
+  model: openai/gpt-oss-20b                 # separate 200K/day quota; used only for top-up
+  max_share: 0.25                           # at most 25% of seeds may be accepted from the fallback (tagged per item)
+  temperature: 1.0                          # same sampling as the main teacher
+  top_p: 1.0
+  max_tokens: 6000
+  strict_schema: true
+  extra_body:
+    reasoning_effort: low
+    include_reasoning: false
+  rate_limits:
+    rpm: 30
+    tpm: 8000
+    daily_token_budget: 190000
+
+judge:
+  model: qwen/qwen3.8-27b                   # third model family, avoids self-preference toward the teacher's style
+  base_url: null                            # null = provider.base_url; set it (and api_key_env) to move the judge elsewhere
+  api_key_env: GROQ_API_KEY                 # use JUDGE_API_KEY if the judge lives on another provider
+  temperature: 0.0                          # repeatable scores
+  top_p: 1.0
+  max_tokens: 600                           # JudgeScore is small; margin for the 60-word justification
+  strict_schema: true                       # if provider_check shows a 400 for strict mode, set false (Pydantic still validates)
+  extra_body:
+    reasoning_effort: none                  # instruct mode is cheaper and enough for rubric scoring
+    reasoning_format: hidden                # never return reasoning text
+  rate_limits:
+    rpm: 30
+    tpm: 8000
+    daily_token_budget: 190000
+  invalid_retries: 2                        # retries when the reply fails Pydantic validation, then logged and excluded
+  systems: [base_zeroshot, ft, base_fewshot]  # judged in this order; few-shot only if quota remains
+  shuffle_seed: 42                          # items shuffled so the judge never sees system order
+
+student:
+  model_id: unsloth/Llama-3.2-3B-Instruct   # ungated mirror with identical weights to the official repo below
+  official_model_id: meta-llama/Llama-3.2-3B-Instruct  # recorded in the model card
+  fallback_model_id: microsoft/Phi-4-mini-instruct     # switch model_id here if Llama access or fp16 is a problem
+  pad_token: "<|finetune_right_pad_id|>"    # reserved Llama 3.2 token; NOT eos, so the model still learns to stop
+  pin_chat_template_date: "26 Jul 2024"     # Llama 3.2 template prints today's date; pinning keeps train and inference prompts identical
+  attn_implementation: sdpa                 # fused attention available on T4 without extra installs
+
+seeds:
+  n: 400                                    # ~10% rejection leaves ~360; floor 200 is still 2x the brief's minimum
+  verdict_quota: {COMPLIANT: 0.30, NON_COMPLIANT: 0.45, NEEDS_MORE_INFO: 0.25}   # violations are the common real case
+  difficulty_quota: {straightforward: 0.50, multi_principle: 0.30, tricky: 0.20}  # enough hard cases to matter
+  length_quota: {short: 0.30, medium: 0.45, long: 0.25}                          # mirrors real ticket lengths
+  length_words: {short: [50, 90], medium: [90, 160], long: [160, 240]}           # word ranges given to the teacher
+  length_tolerance: 0.15                    # accept word counts within +/-15% of the bucket
+  business_unit:
+    - retail branch operations
+    - digital banking app
+    - credit cards
+    - personal and housing loans
+    - SME and corporate banking
+    - trade finance
+    - treasury and investments
+    - marketing and CRM
+    - contact centre
+    - human resources and payroll
+    - IT and information security
+    - fraud and internal audit
+    - collections and recoveries
+    - remittances and foreign currency
+  data_category:
+    - contact details
+    - NIC and identity documents
+    - biometric data
+    - health or insurance medical data
+    - transaction and account history
+    - location data
+    - CCTV and call recordings
+    - data of minors
+    - employee records
+    - credit reports and scores
+    - device and online identifiers
+    - religious or political information
+  processing_activity:
+    - onboarding and KYC collection
+    - sharing with an external vendor
+    - cloud hosting or storage outside Sri Lanka
+    - retention and deletion
+    - automated credit decision or profiling
+    - direct marketing campaign
+    - analytics or AI model training
+    - customer rights request
+    - suspected or confirmed data breach
+    - request from police or a government body
+    - employee monitoring
+    - new product or system launch
+    - data migration or decommissioning
+    - internal sharing between departments
+  artifact_type:
+    - internal email
+    - IT service desk ticket
+    - meeting minutes excerpt
+    - vendor proposal excerpt
+    - incident report
+    - customer complaint summary
+    - chat message from a manager
+
+generation:
+  batch_size: 4                             # 4 seeds per call: ~2.4K counted tokens, ~3 calls/min under 8K TPM
+  max_calls: 120                            # per run; the daily budget guard usually stops first
+  summary_every: 10                         # print a running summary every N calls
+
+filters:
+  embed_model: sentence-transformers/all-MiniLM-L6-v2  # small, fast sentence embedder for dedup and diversity
+  near_dup_threshold: 0.92                  # drop the later item of any pair at or above this cosine
+  audit_n: 30                               # items JP audits by hand (gate G3)
+
+split:
+  train: 0.8                                # 80/10/10 stratified by verdict
+  val: 0.1
+  test: 0.1
+  seed: 42
+  cross_split_threshold: 0.90               # val/test items this close to any train item move to train
+
+quantization:
+  load_in_4bit: true                        # required by the brief (QLoRA)
+  bnb_4bit_quant_type: nf4                  # NF4 suits normally distributed weights (QLoRA paper)
+  bnb_4bit_use_double_quant: true           # quantises the quantisation constants, ~0.4 bits/param saved
+  bnb_4bit_compute_dtype: float16           # T4 (Turing) has no native bf16
+
+lora:
+  r: 16                                     # middle ground: r=8 may underfit 16-way principle choice, r=64 overfits ~300 examples
+  alpha: 32                                 # alpha/r = 2, a common stable scaling
+  dropout: 0.1                              # QLoRA paper value for models up to 13B; small data needs regularisation
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]  # all linear layers (QLoRA paper)
+  bias: none                                # standard; training biases complicates merging
+  task_type: CAUSAL_LM
+
+training:
+  learning_rate: 2.0e-4                     # QLoRA default for small models; final value comes from the sweep
+  lr_scheduler_type: cosine                 # smooth decay in the last epoch helps validation loss keep falling
+  warmup_fraction: 0.05                     # warmup_steps computed from this (we do not rely on warmup_ratio)
+  num_train_epochs: 3                       # ~16 steps/epoch; 3 epochs learn format and mapping before memorising
+  per_device_train_batch_size: 4            # largest that fits the T4 with checkpointing (memory probe)
+  gradient_accumulation_steps: 4            # effective batch 16 for stabler gradients
+  per_device_eval_batch_size: 4             # same memory budget as training
+  max_length: null                          # null = data-driven: longest example rounded up to max_length_multiple
+  max_length_multiple: 128                  # round up so nothing is truncated (truncation would cut <|eot_id|>)
+  completion_only_loss: true                # loss on the answer only; prompt tokens are never generated
+  packing: false                            # keeps per-example masking simple and per-epoch loss readable
+  optim: paged_adamw_8bit                   # paged 8-bit optimiser from the QLoRA paper avoids OOM spikes
+  weight_decay: 0.0                         # QLoRA paper setting; dropout and few epochs regularise
+  max_grad_norm: 0.3                        # QLoRA paper setting; guards fp16 spikes
+  gradient_checkpointing: true              # trades compute for memory so batch 4 fits
+  fp16: true                                # matches T4 hardware
+  bf16: false                               # T4 has no native bf16
+  eval_strategy: epoch                      # rubric asks for per-epoch losses
+  save_strategy: epoch                      # must match eval_strategy for load_best_model_at_end
+  load_best_model_at_end: true              # safety net if the last epoch is not the best
+  metric_for_best_model: eval_loss
+  save_total_limit: 3                       # keeps Drive usage small
+  logging_steps: 2                          # ~8 points per epoch, enough to average a per-epoch train loss
+  seed: 42
+  data_seed: 42
+  group_by_length: false                    # small dataset; random order is easier to reason about
+  torch_compile: false                      # not reliable with 4-bit layers on T4
+  report_to: none                           # set to wandb to log to Weights & Biases (needs WANDB_API_KEY)
+  step0_eval: true                          # evaluate before training so the curve has a real epoch-0 point
+  step0_train_eval: true                    # also measure train loss at epoch 0 (one extra pass over train)
+
+sweep:
+  learning_rates: [1.0e-4, 2.0e-4]          # chosen by validation loss only; never by test
+  fallback_epochs: 2                        # first fallback if no run decreases monotonically
+  fallback_dropout: 0.15                    # second fallback
+
+overfit:
+  n_examples: 8                             # tiny batch the model must memorise
+  max_steps: 60
+  learning_rate: 2.0e-4
+  lora_dropout: 0.0                         # off here: the test checks the pipeline can memorise, not regularisation
+  target_loss: 0.05                         # if the loss does not fall below this, the pipeline is broken
+
+memory_probe:
+  per_device_train_batch_size: 16           # deliberately large to find the memory ceiling
+  gradient_checkpointing: false
+  steps: 2
+
+inference:
+  max_new_tokens: 512                       # covers the longest reference with margin
+  batch_size: 4                             # output_scores for 512 steps x 128K vocab is ~1 GB per 4 sequences
+  fewshot_per_verdict: 1                    # 3 fixed train examples (one per verdict) for the 3-shot baseline
+
+metrics:
+  bertscore_lang: en
+  bertscore_rescale: true                   # rescale_with_baseline makes scores spread over a readable range
+  bootstrap_resamples: 10000
+  bootstrap_seed: 42
+  rationale_max_words_scoring: 90           # scoring mode allows a slightly long rationale
+
+manual_review:
+  n_items: 20                               # rubric needs 10; 20 makes the rate less noisy
+  seed: 42
+  systems: [ft, base_zeroshot]              # both rows per item, shuffled, labelled blind
+
+rag:
+  collection: pdpa_policy
+  embed_model: all-MiniLM-L6-v2             # SentenceTransformerEmbeddingFunction model
+  top_k: 3                                  # three extracts keep the prompt short for a 3B model
+  tau_floor_percentile: 70                  # gate threshold never below the 70th val-perplexity percentile
+
+hub:
+  username: null                            # null = read from the HF token (whoami)
+  merged_repo: Llama-3.2-3B-PDPA-Triage     # Llama licence: derivative names must start with "Llama"
+  adapter_repo: Llama-3.2-3B-PDPA-Triage-LoRA
+  private: false                            # public preferred by the brief
+  max_shard_size: 2GB                       # small shards upload and download reliably from Colab
+
+smoke:
+  model_id: HuggingFaceTB/SmolLM2-135M-Instruct  # tiny model to test plumbing on CPU
+  n_train: 16
+  n_eval: 4
+  n_infer: 4
+  lora_r: 8
+  max_length: 512
+  epochs: 1
+  max_new_tokens: 64
